@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>能力令牌委托链演示</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #1a2233; --border: #2c3a55;
+    --text: #e6ecf5; --dim: #8fa0bd;
+    --ok: #34d399; --revoked: #ef4444; --affected: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--dim); margin-bottom: 16px; flex-wrap: wrap; }
+  .legend span::before { content: "●"; margin-right: 5px; }
+  .lg-ok::before { color: var(--ok); }
+  .lg-revoked::before { color: var(--revoked); }
+  .lg-affected::before { color: var(--affected); }
+  .toolbar { margin-bottom: 16px; }
+  button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--dim); }
+  .tree ul { list-style: none; margin: 0; padding-left: 28px; position: relative; }
+  .tree > ul { padding-left: 0; }
+  .tree ul ul::before {
+    content: ""; position: absolute; left: 10px; top: 0; bottom: 12px;
+    border-left: 1px dashed var(--border);
+  }
+  .tree li { position: relative; padding: 4px 0; }
+  .node {
+    display: inline-block; min-width: 340px; padding: 8px 12px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-left: 4px solid var(--ok); border-radius: 8px; cursor: pointer;
+    transition: border-color .2s, opacity .2s;
+  }
+  .node:hover { border-color: var(--dim); }
+  .node.revoked { border-left-color: var(--revoked); background: #2a1a1e; }
+  .node.affected { border-left-color: var(--affected); background: #2a2318; }
+  .node.invalid { opacity: .65; }
+  .nid { font-weight: 600; font-size: 14px; }
+  .badge {
+    float: right; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    background: #12352a; color: var(--ok); margin-left: 10px;
+  }
+  .revoked .badge { background: #3d1d22; color: var(--revoked); }
+  .affected .badge { background: #3d2f16; color: var(--affected); }
+  .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  .caps { margin-top: 4px; }
+  .cap {
+    display: inline-block; font-size: 11px; font-family: ui-monospace, monospace;
+    background: #101a2e; border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 6px; margin: 2px 3px 0 0; color: #9ec1ff;
+  }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 18px; line-height: 1.7; }
+  code { background: #101a2e; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>能力令牌委托链（Capability Token Delegation）</h1>
+<div class="sub">点击任意令牌可撤销 / 恢复。撤销会沿委托链向下传播：所有后代令牌立即失效，其他分支不受影响。</div>
+<div class="legend">
+  <span class="lg-ok">有效</span>
+  <span class="lg-revoked">被直接撤销</span>
+  <span class="lg-affected">受撤销传播影响（祖先被撤销）</span>
+</div>
+<div class="toolbar"><button id="reset">重置全部撤销</button></div>
+<div class="tree" id="tree"></div>
+<div class="hint">
+  校验规则（与 Go 实现一致）：子令牌能力必须是父令牌的子集、过期时间不晚于父令牌；
+  验证时从根向下重算整条 HMAC 签名链，任一环签名无效、约束被违反或祖先被撤销，整个令牌即不可用。<br>
+  本页数据与逻辑全部内嵌于单个 HTML 文件，未启动任何服务。撤销传播算法见 <code>README.md</code>。
+</div>
+
+<script>
+// ===== 内嵌演示数据：与 capability/token_test.go 中的委托树一致 =====
+const TOKENS = [
+  { id: "root",   parent: null,    subject: "svc-mesh",       caps: ["read:/data","write:/data","delete:/data"], ttl: "0h ~ 3h" },
+  { id: "svcA",   parent: "root",  subject: "service-a",      caps: ["read:/data","write:/data"],               ttl: "0h ~ 2h" },
+  { id: "userA1", parent: "svcA",  subject: "user-alice",     caps: ["read:/data"],                             ttl: "0h ~ 2h" },
+  { id: "userA2", parent: "svcA",  subject: "user-bob",       caps: ["read:/data","write:/data"],               ttl: "0h ~ 1h" },
+  { id: "sessA2", parent: "userA2",subject: "session-bob-1",  caps: ["read:/data"],                             ttl: "0h ~ 1h" },
+  { id: "svcB",   parent: "root",  subject: "service-b",      caps: ["read:/data"],                             ttl: "0h ~ 3h" },
+  { id: "userB1", parent: "svcB",  subject: "user-carol",     caps: ["read:/data"],                             ttl: "0h ~ 2h" },
+];
+
+const byId = Object.fromEntries(TOKENS.map(t => [t.id, t]));
+const childrenOf = {};
+TOKENS.forEach(t => { (childrenOf[t.parent] ??= []).push(t.id); });
+
+// 撤销集合（仅记录被“直接撤销”的令牌；后代失效由传播推导）
+const revoked = new Set();
+
+// 撤销传播：收集 id 的全部后代（递归 DFS），与 Go 端 Store.Descendants 一致
+function descendants(id) {
+  const out = [];
+  (function walk(pid) {
+    for (const c of childrenOf[pid] || []) { out.push(c); walk(c); }
+  })(id);
+  return out;
+}
+
+// 令牌是否因祖先被撤销而失效
+function affectedByRevocation(id) {
+  let cur = byId[id].parent;
+  while (cur) {
+    if (revoked.has(cur)) return true;
+    cur = byId[cur].parent;
+  }
+  return false;
+}
+
+function statusOf(id) {
+  if (revoked.has(id)) return "revoked";
+  if (affectedByRevocation(id)) return "affected";
+  return "ok";
+}
+
+function render() {
+  const tree = document.getElementById("tree");
+  tree.innerHTML = "";
+  const build = (id) => {
+    const t = byId[id];
+    const st = statusOf(id);
+    const li = document.createElement("li");
+    const node = document.createElement("div");
+    node.className = "node " + (st === "ok" ? "" : st + " invalid");
+    const badgeText = st === "ok" ? "有效" : st === "revoked" ? "已撤销" : "已失效(传播)";
+    node.innerHTML =
+      `<span class="badge">${badgeText}</span>` +
+      `<div class="nid">${t.id} <span style="color:var(--dim);font-weight:400">→ ${t.subject}</span></div>` +
+      `<div class="meta">有效期 ${t.ttl}${t.parent ? " · 父令牌 " + t.parent : " · 根令牌"}</div>` +
+      `<div class="caps">${t.caps.map(c => `<span class="cap">${c}</span>`).join("")}</div>`;
+    node.title = revoked.has(id) ? "点击恢复此令牌" : "点击撤销此令牌（全部后代将连带失效）";
+    node.onclick = () => {
+      revoked.has(id) ? revoked.delete(id) : revoked.add(id);
+      render();
+    };
+    li.appendChild(node);
+    const kids = childrenOf[id] || [];
+    if (kids.length) {
+      const ul = document.createElement("ul");
+      kids.forEach(k => ul.appendChild(build(k)));
+      li.appendChild(ul);
+    }
+    return li;
+  };
+  const rootUl = document.createElement("ul");
+  (childrenOf[null] || []).forEach(id => rootUl.appendChild(build(id)));
+  tree.appendChild(rootUl);
+}
+
+document.getElementById("reset").onclick = () => { revoked.clear(); render(); };
+render();
+</script>
+</body>
+</html>
