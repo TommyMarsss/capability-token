@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>能力令牌委托链 — 撤销传播可视化</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1c2230;
+    --ink-soft: #5b6475;
+    --line: #dfe3ea;
+    --accent: #2f6feb;
+    --ok-bg: #e8f6ee; --ok-bd: #2faa60; --ok-ink: #157f43;
+    --rev-bg: #fdecec; --rev-bd: #d92d20; --rev-ink: #b42318;
+    --blk-bg: #fef3e6; --blk-bd: #ec7d10; --blk-ink: #b54708;
+    --exp-bg: #eef0f3; --exp-bd: #98a1b2; --exp-ink: #667085;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --panel: #1a1f2a; --ink: #e7eaf0; --ink-soft: #9aa4b6;
+      --line: #2b3140; --accent: #6b9bff;
+      --ok-bg: #13251c; --ok-bd: #2faa60; --ok-ink: #5fd093;
+      --rev-bg: #2e1615; --rev-bd: #f06157; --rev-ink: #ff8a80;
+      --blk-bg: #2e2113; --blk-bd: #ec913d; --blk-ink: #ffb161;
+      --exp-bg: #1e222b; --exp-bd: #6b7280; --exp-ink: #9aa4b6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 28px 24px 18px; max-width: 1180px; margin: 0 auto;
+  }
+  header h1 { margin: 0 0 6px; font-size: 24px; }
+  header p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 0 24px 48px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; }
+  @media (max-width: 920px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; font-size: 12.5px; }
+  .legend span {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--ok-bd); } .dot.rev { background: var(--rev-bd); }
+  .dot.blk { background: var(--blk-bd); } .dot.exp { background: var(--exp-bd); }
+
+  /* ---- delegation tree ---- */
+  ul.tree, ul.tree ul { list-style: none; margin: 0; padding: 0; }
+  ul.tree ul { position: relative; margin-left: 22px; }
+  ul.tree ul::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 16px;
+    border-left: 1.5px solid var(--line);
+  }
+  ul.tree li { position: relative; padding: 5px 0 5px 22px; }
+  ul.tree ul li::before {
+    content: ""; position: absolute; left: 0; top: 26px;
+    width: 16px; border-top: 1.5px solid var(--line);
+  }
+  /* descendants of a revoked token sit inside the red subtree band */
+  li.revoked-branch > ul::before { border-left-color: var(--rev-bd); }
+  li.revoked-branch > ul li::before { border-top-color: var(--rev-bd); }
+
+  .node {
+    border: 1.5px solid var(--line); border-left-width: 4px;
+    border-radius: 10px; padding: 10px 13px; cursor: pointer;
+    background: var(--panel); transition: filter .12s, transform .05s;
+  }
+  .node:hover { filter: brightness(1.03); }
+  .node:active { transform: translateY(1px); }
+  .node.valid { border-left-color: var(--ok-bd); }
+  .node.revoked { border-color: var(--rev-bd); border-left-width: 4px; background: var(--rev-bg); }
+  .node.blocked_revoked { border-left-color: var(--blk-bd); background: var(--blk-bg); }
+  .node.expired { border-left-color: var(--exp-bd); background: var(--exp-bg); opacity: .85; }
+  .node .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .node .issuer { font-weight: 600; }
+  .node .id { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); }
+  .node .caps { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; padding: 1px 8px;
+    border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .badge {
+    margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    padding: 2px 9px; border-radius: 999px; text-transform: uppercase;
+  }
+  .badge.valid { background: var(--ok-bg); color: var(--ok-ink); border: 1px solid var(--ok-bd); }
+  .badge.revoked { background: var(--rev-bg); color: var(--rev-ink); border: 1px solid var(--rev-bd); }
+  .badge.blocked_revoked { background: var(--blk-bg); color: var(--blk-ink); border: 1px solid var(--blk-bd); }
+  .badge.expired { background: var(--exp-bg); color: var(--exp-ink); border: 1px solid var(--exp-bd); }
+
+  /* ---- detail panel ---- */
+  .detail .field { margin-bottom: 10px; }
+  .detail label { display: block; font-size: 11.5px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .05em; }
+  .detail .val { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  pre {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font-size: 11.5px; overflow: auto; margin: 6px 0 0;
+    font-family: var(--mono); max-height: 220px;
+  }
+  .rawtoken { user-select: all; }
+  .hint { color: var(--ink-soft); font-size: 13px; }
+
+  /* ---- audit log ---- */
+  .audit { margin-top: 18px; }
+  .audit .item {
+    border: 1px solid var(--line); border-left: 3px solid var(--rev-bd);
+    border-radius: 8px; padding: 9px 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .audit .item .kind {
+    font-weight: 700; color: var(--rev-ink); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .audit .item code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); }
+  .counts { display: flex; gap: 8px; margin-bottom: 14px; }
+  .counts div {
+    flex: 1; text-align: center; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 4px; font-size: 12px; color: var(--ink-soft);
+  }
+  .counts b { display: block; font-size: 18px; color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔐 能力令牌（Capability Token）委托链</h1>
+  <p>父令牌签发子令牌时权限只能收窄、有效期只能缩短；撤销会沿委托边向下递归传播。点击节点查看令牌结构。</p>
+</header>
+<main>
+  <div class="grid">
+    <section class="panel">
+      <h2>委托树</h2>
+      <div class="legend">
+        <span><i class="dot ok"></i>有效</span>
+        <span><i class="dot rev"></i>已撤销（撤销源头）</span>
+        <span><i class="dot blk"></i>祖先被撤销 → 连带失效</span>
+        <span><i class="dot exp"></i>已过期</span>
+      </div>
+      <div id="tree" class="tree-host"></div>
+      <div class="audit">
+        <h2>签发审计：被拒绝的委托请求</h2>
+        <div id="audit"></div>
+      </div>
+    </section>
+    <aside class="panel detail" id="detail">
+      <h2>令牌详情</h2>
+      <p class="hint">点击左侧任意节点，查看 header.payload.signature 三段结构与解码内容。</p>
+    </aside>
+  </div>
+</main>
+
+<script>
+"use strict";
+// 由 Go 演示程序在生成时注入（数据与逻辑全部内嵌于本文件）。
+const DATA = __SNAPSHOT__;
+const ATTEMPTS = __ATTEMPTS__;
+
+const STATUS_TEXT = {
+  valid: "有效",
+  revoked: "已撤销",
+  blocked_revoked: "连带失效",
+  expired: "已过期"
+};
+
+const byId = new Map(DATA.nodes.map(n => [n.id, n]));
+
+function fmtTime(sec) {
+  return new Date(sec * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function decodePart(part) {
+  try {
+    const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.stringify(JSON.parse(decodeURIComponent(
+      json.split("").map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")
+    )), null, 2);
+  } catch (e) { return "(无法解码)"; }
+}
+
+function nodeEl(n) {
+  const div = document.createElement("div");
+  div.className = "node " + n.status;
+  const blocked = n.status === "blocked_revoked" && n.blockedBy
+    ? ` · 被 <span class="id">${esc((byId.get(n.blockedBy) || {}).issuer || n.blockedBy.slice(0, 12))}</span> 阻断`
+    : "";
+  div.innerHTML =
+    `<div class="row1">` +
+      `<span class="issuer">${esc(n.issuer)}</span>` +
+      `<span class="id">${esc(n.shortId)}…</span>` +
+      `<span class="badge ${n.status}">${STATUS_TEXT[n.status] || n.status}${blocked}</span>` +
+    `</div>` +
+    `<div class="caps">${n.caps.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>` +
+    `<div class="id" style="margin-top:6px">过期 ${esc(fmtTime(n.exp))}${n.revoked ? " · 撤销于 " + esc(fmtTime(n.revokedAt)) : ""}</div>`;
+  div.addEventListener("click", () => showDetail(n));
+  return div;
+}
+
+function buildTree() {
+  const childrenOf = new Map();
+  for (const n of DATA.nodes) {
+    if (!childrenOf.has(n.parentId)) childrenOf.set(n.parentId, []);
+    childrenOf.get(n.parentId).push(n);
+  }
+  const rootUl = document.createElement("ul");
+  rootUl.className = "tree";
+
+  const render = (parentId, ul) => {
+    for (const n of (childrenOf.get(parentId) || [])) {
+      const li = document.createElement("li");
+      // 给“撤销源头 + 其全部后代”的整条分支打上红色标记
+      if (n.status === "revoked" || n.status === "blocked_revoked") li.classList.add("revoked-branch");
+      li.appendChild(nodeEl(n));
+      if (childrenOf.has(n.id)) {
+        const childUl = document.createElement("ul");
+        li.appendChild(childUl);
+        render(n.id, childUl);
+      }
+      ul.appendChild(li);
+    }
+  };
+  render("", rootUl);
+  document.getElementById("tree").appendChild(rootUl);
+}
+
+function showDetail(n) {
+  const parts = n.raw.split(".");
+  const el = document.getElementById("detail");
+  el.innerHTML =
+    `<h2>令牌详情</h2>` +
+    `<div class="field"><label>持有者 / 角色</label><div class="val">${esc(n.issuer)}</div></div>` +
+    `<div class="field"><label>状态</label><div class="val"><span class="badge ${n.status}">${STATUS_TEXT[n.status] || n.status}</span></div></div>` +
+    `<div class="field"><label>Token ID（= 公钥指纹）</label><div class="val">${esc(n.shortId)}…</div></div>` +
+    (n.parentId ? `<div class="field"><label>父令牌</label><div class="val">${esc((byId.get(n.parentId) || {}).issuer || n.parentId.slice(0, 12))}（${esc(n.parentId.slice(0, 12))}…）</div></div>`
+                : `<div class="field"><label>父令牌</label><div class="val">无 —— 根令牌，自签名</div></div>`) +
+    `<div class="field"><label>能力（${n.caps.length}）</label><div class="val">${n.caps.map(c => `<span class="chip">${esc(c)}</span>`).join(" ")}</div></div>` +
+    `<div class="field"><label>签发 / 过期</label><div class="val">${esc(fmtTime(n.iat))} → ${esc(fmtTime(n.exp))}</div></div>` +
+    (n.revoked ? `<div class="field"><label>撤销时间</label><div class="val">${esc(fmtTime(n.revokedAt))}</div></div>` : "") +
+    (n.blockedBy ? `<div class="field"><label>撤销来源（最近被撤销祖先）</label><div class="val">${esc((byId.get(n.blockedBy) || {}).issuer)}（${esc(n.blockedBy.slice(0, 12))}…）</div></div>` : "") +
+    `<div class="field"><label>原始令牌 header.payload.signature</label><pre class="rawtoken">${esc(n.raw)}</pre></div>` +
+    `<div class="field"><label>Header（签名算法 + 签名方公钥指纹）</label><pre>${esc(decodePart(parts[0]))}</pre></div>` +
+    `<div class="field"><label>Payload（声明）</label><pre>${esc(decodePart(parts[1]))}</pre></div>`;
+}
+
+function buildAudit() {
+  const host = document.getElementById("audit");
+  if (!ATTEMPTS.length) { host.innerHTML = '<p class="hint">无</p>'; return; }
+  for (const a of ATTEMPTS) {
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML =
+      `<div class="kind">✗ ${esc(a.kind)}</div>` +
+      `<div>“${esc(a.issuer)}” 试图从 “${esc(a.parent)}” 获得 ` +
+      `<code>[${a.caps.map(esc).join(", ")}]</code>，有效期至 ${esc(fmtTime(a.exp))}</div>` +
+      `<div class="id" style="margin-top:3px">${esc(a.error)}</div>`;
+    host.appendChild(div);
+  }
+}
+
+function buildCounts() {
+  const c = { valid: 0, revoked: 0, blocked_revoked: 0, expired: 0 };
+  for (const n of DATA.nodes) c[n.status]++;
+  const sec = document.querySelector("section.panel");
+  const div = document.createElement("div");
+  div.className = "counts";
+  div.innerHTML =
+    `<div><b>${c.valid}</b>有效</div>` +
+    `<div><b>${c.revoked}</b>撤销源头</div>` +
+    `<div><b style="color:var(--blk-ink)">${c.blocked_revoked}</b>连带失效</div>` +
+    `<div><b>${c.expired}</b>过期</div>`;
+  sec.insertBefore(div, sec.children[1]);
+}
+
+buildTree();
+buildAudit();
+buildCounts();
+showDetail(byId.get(DATA.rootId));
+</script>
+</body>
+</html>
